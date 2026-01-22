@@ -64,8 +64,6 @@ class KernelBuilder:
         return self.alloc_scratch(name, length=VLEN)
 
     def scratch_const(self, val, name=None):
-        # NOTE: This method is not used in the optimized build_kernel to avoid
-        # conflict with the packer, but kept for compatibility.
         if val not in self.const_map:
             addr = self.alloc_scratch(name)
             self.add("load", ("const", addr, val))
@@ -73,9 +71,6 @@ class KernelBuilder:
         return self.const_map[val]
 
     def pack_instructions(self, raw_slots):
-        """
-        Greedy instruction packer that respects RAW dependencies and Slot limits.
-        """
         packed_instrs = []
         current_bundle = defaultdict(list)
         current_defs = set()
@@ -84,39 +79,39 @@ class KernelBuilder:
             reads = set()
             writes = set()
             op = slot[0]
-            args = slot[1:] # args[0] is usually dest
+            args = slot[1:] 
 
-            if engine == 'alu': # op, dest, a, b
+            if engine == 'alu': 
                 writes.add(args[0])
                 if len(args) > 1: reads.add(args[1])
                 if len(args) > 2: reads.add(args[2])
             
             elif engine == 'valu':
-                if op == 'vbroadcast': # dest, src
+                if op == 'vbroadcast': 
                     for k in range(VLEN): writes.add(args[0] + k)
                     reads.add(args[1])
-                elif op == 'multiply_add': # dest, a, b, c
+                elif op == 'multiply_add':
                     for k in range(VLEN):
                         writes.add(args[0] + k)
                         reads.add(args[1] + k)
                         reads.add(args[2] + k)
                         reads.add(args[3] + k)
-                else: # op, dest, a, b
+                else: 
                     for k in range(VLEN):
                         writes.add(args[0] + k)
                         if len(args) > 1: reads.add(args[1] + k)
                         if len(args) > 2: reads.add(args[2] + k)
 
             elif engine == 'load':
-                if op == 'load': # dest, addr
+                if op == 'load': 
                     writes.add(args[0])
                     reads.add(args[1])
-                elif op == 'vload': # dest, addr
+                elif op == 'vload': 
                     for k in range(VLEN): writes.add(args[0] + k)
                     reads.add(args[1])
-                elif op == 'const': # dest, val
+                elif op == 'const': 
                     writes.add(args[0])
-                elif op == 'load_offset': # dest, addr, offset
+                elif op == 'load_offset': 
                     writes.add(args[0])
                     reads.add(args[1])
 
@@ -127,16 +122,15 @@ class KernelBuilder:
                     for k in range(VLEN): reads.add(args[1] + k)
 
             elif engine == 'flow':
-                if op == 'select': # dest, cond, a, b
+                if op == 'select': 
                     writes.add(args[0])
                     reads.add(args[1])
                     reads.add(args[2])
                     reads.add(args[3])
-                elif op == 'add_imm': # dest, src, imm
+                elif op == 'add_imm': 
                     writes.add(args[0])
                     reads.add(args[1])
-                    # args[2] is immediate, not a register
-                elif op == 'coreid': # dest
+                elif op == 'coreid': 
                     writes.add(args[0])
                 elif op == 'vselect':
                     for k in range(VLEN): 
@@ -152,13 +146,11 @@ class KernelBuilder:
         for engine, slot in raw_slots:
             reads, writes = get_rw_sets(engine, slot)
             
-            # Check 1: Resource Limits
             if len(current_bundle[engine]) >= SLOT_LIMITS[engine]:
                 packed_instrs.append(dict(current_bundle))
                 current_bundle = defaultdict(list)
                 current_defs = set()
 
-            # Check 2: RAW Dependencies
             if not reads.isdisjoint(current_defs):
                 packed_instrs.append(dict(current_bundle))
                 current_bundle = defaultdict(list)
@@ -179,7 +171,6 @@ class KernelBuilder:
         def emit(engine, slot):
             raw_ops.append((engine, slot))
 
-        # --- Allocations ---
         init_vars = ["rounds", "n_nodes", "batch_size", "forest_height", "forest_values_p", "inp_indices_p", "inp_values_p"]
         for v in init_vars: self.alloc_scratch(v, 1)
 
@@ -233,12 +224,13 @@ class KernelBuilder:
         curr_values_ptr = self.alloc_scratch("curr_val_ptr")
         forest_base_vec = self.alloc_vec("forest_base_vec")
         
-        emit("load", ("load", tmp_scalar, ptr_forest))
-        emit("valu", ("vbroadcast", forest_base_vec, tmp_scalar))
+        # CORRECTED: Broadcast the address, do not load from it
+        emit("valu", ("vbroadcast", forest_base_vec, ptr_forest))
 
         for r in range(rounds):
-            emit("load", ("load", curr_indices_ptr, ptr_indices))
-            emit("load", ("load", curr_values_ptr, ptr_values))
+            # CORRECTED: Copy base pointers using add_imm + 0, do not load (dereference)
+            emit("flow", ("add_imm", curr_indices_ptr, ptr_indices, 0))
+            emit("flow", ("add_imm", curr_values_ptr, ptr_values, 0))
 
             for b in range(0, batch_size, VLEN):
                 emit("load", ("vload", idx_vec, curr_indices_ptr))
